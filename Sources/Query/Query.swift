@@ -47,7 +47,7 @@ public struct Query<T> where T: NSManagedObject & Queryable {
         case localizedCaseInsensitive
     }
 
-    let context: NSManagedObjectContext
+    public let context: NSManagedObjectContext
     var predicates = [NSPredicate]()
     var sortDescriptors = [NSSortDescriptor]()
     var defaultValues: [String: Any]? = [:]
