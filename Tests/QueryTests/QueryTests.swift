@@ -8,6 +8,7 @@
 
 import XCTest
 import Nimble
+import CoreData
 @testable import Query
 
 class QueryTests: CoreDataTestCase {
