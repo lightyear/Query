@@ -8,54 +8,97 @@
 
 import CoreData
 
-/** Classes that conform to this protocol may use the `Query<T>` query builder.
+/**
+ Classes that conform to this protocol may use the `Query<T>` query builder's
+ `Attribute`-focused functions.
 
-The only requirement to conform to this protocol is the definition of the `Attribute`
-associated type. Typically, this is a simple enum with a String raw value type,
-whose cases are the names of the attributes that you want to query. Use these
-in calls to the dictionary forms of `where` and `or` for type-safe conditions,
-instead of stringly-typed conditions.
+ `Attribute` is typically a simple enum, whose cases are the names of the
+ attributes that you want to query. Use these in calls to the dictionary forms of
+ `where` and `or` for type-safe conditions, instead of stringly-typed conditions.
 */
 public protocol Queryable {
     associatedtype Attribute: Hashable
 }
 
-public extension NSFetchRequestResult where Self: NSManagedObject, Self: Queryable {
+public extension NSFetchRequestResult where Self: NSManagedObject {
+    /**
+     Create a new `Query` builder tied to the provided context.
+
+     - Parameter context: the managed object context in which to query for objects
+     - Returns: A new `Query` instance
+    */
     static func query(in context: NSManagedObjectContext) -> Query<Self> {
         Query<Self>(in: context)
     }
 
+    /**
+     Create a new `Query` builder tied to the managed object context of this instance.
+
+     - Returns: A new `Query` instance
+     */
     func query() -> Query<Self> {
         Query<Self>(in: managedObjectContext!)
     }
 }
 
+/// Errors thrown by the Query library.
 public enum QueryError: Error {
+    /**
+     The current `Query` instance is too complex for the desired result.
+
+     This error is thrown from `firstOrInsert()` when the predicate part of the
+     query is formed from stringly-typed clauses or inequalities.
+
+     In the former case, this library does not include a parser to deconstruct
+     the predicate string to discover default property values. In the latter,
+     there are multiple values that would match the predicate and it doesn't
+     make sense to pick one at random.
+     */
     case tooComplex
 }
 
-/// A chainable query builder for Core Data.
-public struct Query<T> where T: NSManagedObject & Queryable {
+/**
+ A chainable query builder for Core Data.
+
+ Note that `Query` is a value type and none of its functions are mutating.
+ Functions that return a `Query` return new instances with the additional
+ functionality applied. You can chain calls to build up a complex fetch request.
+*/
+public struct Query<T> where T: NSManagedObject {
+    /// The sort order used in calls to `order(by:_:_:)`.
     public enum SortDirection {
+        /// Results should be sorted by increasing value (1, 2, 3, ...).
         case ascending
+        /// Results should be sorted by decreasing value (3, 2, 1, ...).
         case descending
     }
 
+    /// The selector to use when sorting string values in calls to `order(by:_:_:)`.
     public enum Selector {
+        /// Default (case sensitive, locale unaware) comparison.
         case none
+        /// A standardized, locale-aware comparison. This is equivalent to `StringProtocol.localizedStandardCompare(_:)`.
         case localizedStandard
+        /// A case insensitive, locale-aware comparison. This is equivalent to `StringProtocol.localizedCaseInsensitiveCompare(_:)`.
         case localizedCaseInsensitive
     }
 
+    /// The managed object context in which the query will be executed.
     public let context: NSManagedObjectContext
     var predicates = [NSPredicate]()
     var sortDescriptors = [NSSortDescriptor]()
     var defaultValues: [String: Any]? = [:]
 
+    /**
+     Initializes a new `Query` instance with the provided managed object context.
+
+     - Parameter context: the managed object context in which to query for objects
+     */
     public init(in context: NSManagedObjectContext) {
         self.context = context
     }
 
+    /// Returns a new `NSFetchRequest` instance with the same predicate and sort order as this `Query` instance.
     public var fetchRequest: NSFetchRequest<T> {
         let entityName = "\(T.self)"
         let fetchRequest = NSFetchRequest<T>(entityName: entityName)
@@ -64,14 +107,35 @@ public struct Query<T> where T: NSManagedObject & Queryable {
         return fetchRequest
     }
 
+    /**
+     Fetches all objects matching this `Query` instance.
+
+     - Throws: Rethrows errors from the underlying `NSManagedObject.fetch(_:)` call.
+     - Returns: All matching managed objects from the `Query`'s context.
+     */
     public func all() throws -> [T] {
         try context.fetch(fetchRequest)
     }
 
+    /**
+     Counts the number of objects matching this `Query` instance.
+
+     - Throws: Rethrows errors from the underlying `NSManagedObject.count(for:)` call.
+     - Returns: The number of matching managed objects in the `Query`'s context.
+     */
     public func count() throws -> Int {
         try context.count(for: fetchRequest)
     }
 
+    /**
+     Fetches the first object matching this `Query` instance.
+
+     "First" only has useful meaning if the results are sorted.
+
+     - Throws: Rethrows errors from the underlying `NSManagedObject.fetch(_:)` call.
+     - Returns: The first matching object from the `Query`'s context or `nil` if
+       no objects match.
+     */
     public func first() throws -> T? {
         let fetchRequest = self.fetchRequest
         fetchRequest.fetchLimit = 1
@@ -79,22 +143,15 @@ public struct Query<T> where T: NSManagedObject & Queryable {
         return results.first
     }
 
-    public func firstOrInsert() throws -> T {
-        guard let defaultValues = defaultValues else { throw QueryError.tooComplex }
+    /**
+     Adds a level of sorting to the `Query`.
 
-        if let first = try first() {
-            return first
-        }
-
-        let new = NSEntityDescription.insertNewObject(forEntityName: "\(T.self)", into: context) as! T
-        new.setValuesForKeys(defaultValues)
-        return new
-    }
-
-    public func order(by attribute: T.Attribute, _ direction: SortDirection = .ascending, _ selector: Selector = .none) -> Query<T> {
-        order(by: "\(attribute)", direction, selector)
-    }
-
+     - Parameter attribute: the name of the property by which to sort
+     - Parameter direction: the direction of the sort (default is `.ascending`)
+     - Parameter selector: for string values, the selector to use for comparisons
+       (default is `.none`, a case sensitive, locale-unaware comparison)
+     - Returns: A new `Query` with the sort applied
+     */
     public func order(by attribute: String, _ direction: SortDirection = .ascending, _ selector: Selector = .none) -> Query<T> {
         var query = self
         switch selector {
@@ -108,6 +165,18 @@ public struct Query<T> where T: NSManagedObject & Queryable {
         return query
     }
 
+    /**
+     Add a filtering predicate to the `Query`.
+
+     The predicate in this function is combined with any existing predicates on
+     the `Query` with an AND. After calling this function, `firstOrInsert()`
+     cannot be used on the resulting `Query` because the matching property values
+     are not parsed from the format string.
+
+     - Parameter format: the `NSPredicate` format string
+     - Parameter args: arguments matching up to format string placeholders, if any
+     - Returns: A new `Query` with the predicate applied
+     */
     public func `where`(_ format: String, _ args: Any...) -> Query<T> {
         var query = self
         query.predicates.append(NSPredicate(format: format, argumentArray: args))
@@ -115,7 +184,79 @@ public struct Query<T> where T: NSManagedObject & Queryable {
         return query
     }
 
-    public func `where`(_ dictionary: [T.Attribute: Any]) -> Query<T> {
+    /**
+     Add a filtering predicate to the `Query`.
+
+     The predicate in this function is combined with any existing predicates on
+     the `Query` with an OR. After calling this function, `firstOrInsert()`
+     cannot be used on the resulting `Query` because the matching property values
+     are not parsed from the format string.
+
+     - Parameter format: the `NSPredicate` format string
+     - Parameter args: arguments matching up to format string placeholders, if any
+     - Returns: A new `Query` with the predicate applied
+     */
+    public func or(_ format: String, args: Any...) -> Query<T> {
+        var query = self
+        guard let lastPredicate = query.predicates.popLast() else {
+            preconditionFailure("No existing “where” condition to modify with “or”")
+        }
+        query.predicates.append(NSCompoundPredicate(orPredicateWithSubpredicates: [lastPredicate, NSPredicate(format: format, argumentArray: args)]))
+        query.defaultValues = nil
+        return query
+    }
+}
+
+public extension Query where T: Queryable {
+    /**
+     Find the first matching object in the context or insert and return a new one.
+
+     This function only works when the predicates are built using the dictionary
+     forms of `where(_:)` and `.or(_:)`, and only when using strict equality
+     tests.
+
+     - Throws: Rethrows errors from the underlying `NSManagedObject.fetch(_:)`
+       call or `QueryError.tooComplex` if the default property values cannot be
+       determined.
+     - Returns: The first matching object or a newly inserted object with its
+       properties set to match the `Query` filter predicate.
+     */
+    func firstOrInsert() throws -> T {
+        guard let defaultValues = defaultValues else { throw QueryError.tooComplex }
+
+        if let first = try first() {
+            return first
+        }
+
+        let new = NSEntityDescription.insertNewObject(forEntityName: "\(T.self)", into: context) as! T
+        new.setValuesForKeys(defaultValues)
+        return new
+    }
+
+    /**
+     Adds a level of sorting to the `Query`.
+
+     - Parameter attribute: the property by which to sort
+     - Parameter direction: the direction of the sort (default is `.ascending`)
+     - Parameter selector: for string values, the selector to use for comparisons
+       (default is `.none`, a case sensitive, locale-unaware comparison)
+     - Returns: A new `Query` with the sort applied
+     */
+    func order(by attribute: T.Attribute, _ direction: SortDirection = .ascending, _ selector: Selector = .none) -> Query<T> {
+        order(by: "\(attribute)", direction, selector)
+    }
+
+    /**
+     Add a filtering predicate to the `Query`.
+
+     The predicate in this function is combined with any existing predicates on
+     the `Query` with an AND.
+
+     - Parameter dictionary: the properties and the values expected to match.
+       Values can include inequalities wrapped in `lt` or `lte`, or Swift ranges.
+     - Returns: A new `Query` with the predicate applied
+     */
+    func `where`(_ dictionary: [T.Attribute: Any]) -> Query<T> {
         var query = self
         query.predicates.append(andSubpredicate(from: dictionary))
 
@@ -153,17 +294,19 @@ public struct Query<T> where T: NSManagedObject & Queryable {
         return NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
     }
 
-    public func or(_ format: String, args: Any...) -> Query<T> {
-        var query = self
-        guard let lastPredicate = query.predicates.popLast() else {
-            preconditionFailure("No existing “where” condition to modify with “or”")
-        }
-        query.predicates.append(NSCompoundPredicate(orPredicateWithSubpredicates: [lastPredicate, NSPredicate(format: format, argumentArray: args)]))
-        query.defaultValues = nil
-        return query
-    }
+    /**
+     Add a filtering predicate to the `Query`.
 
-    public func or(_ dictionary: [T.Attribute: Any]) -> Query<T> {
+     The predicate in this function is combined with any existing predicates on
+     the `Query` with an OR. After calling this function, `firstOrInsert()`
+     cannot be used on the resulting `Query` because the matching property values
+     are indeterminant.
+
+     - Parameter dictionary: the properties and the values expected to match.
+       Values can include inequalities wrapped in `lt` or `lte`, or Swift ranges.
+     - Returns: A new `Query` with the predicate applied
+     */
+    func or(_ dictionary: [T.Attribute: Any]) -> Query<T> {
         var query = self
         guard let lastPredicate = query.predicates.popLast() else {
             preconditionFailure("No existing “where” condition to modify with “or”")
